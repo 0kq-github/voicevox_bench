@@ -6,33 +6,48 @@ import argparse
 
 
 def synthesis(
-    text: str, address="127.0.0.1", port=50021, speaker=0, pitch=0.0, speed=1.0
+    text: str, address="127.0.0.1", port=50032, speakerUuid="",styleId=0, pitch=0.0, speed=1.0
 ) -> float:
     """音声生成
 
     Args:
         text : 生成する文章
-        address : VOCIEVOXのAPIサーバーのアドレス
-        speaker : speaker_id
+        address : COEIROINKのAPIサーバーのアドレス
+        speakerUuid : speakerUuid
+        setyleId: styleId
         pitch : ピッチ
         speed : スピード
 
     Returns:
         生成時間(秒)
     """
+    if not speakerUuid:
+        speakers = get_speakers(address=address, port=port)
+        speakerUuid = list(speakers.keys())[0]
     address = "http://"+address
-    query_payload = {"text": text, "speaker": speaker}
-    resp = requests.post(f"{address}:{port}/audio_query", params=query_payload)
+    query_payload = {"text": text}
+    resp = requests.post(f"{address}:{port}/v1/estimate_prosody", json=query_payload)
     if not resp.status_code == 200:
         raise ConnectionError("Status code: %d" % resp.status_code)
     query_data = resp.json()
-    synth_payload = {"speaker": speaker}
-    query_data["speedScale"] = speed
-    query_data["pitchScale"] = pitch
+    synth_payload = {
+        "speakerUuid": speakerUuid,
+        "styleId": styleId,
+        "text": text,
+        "speedScale": speed,
+        "volumeScale": 0,
+        "pitchScale": pitch,
+        "intonationScale": 0.0,
+        "prePhonemeLength": 0.0,
+        "postPhonemeLength": 0.0,
+        "outputSamplingRate": 44100
+        }
+    synth_payload["prosodyDetail"] = query_data["detail"]
     before = perf_counter()
-    resp = requests.post(f"{address}:{port}/synthesis",
-                         params=synth_payload, data=json.dumps(query_data))
+    resp = requests.post(f"{address}:{port}/v1/synthesis",
+                        json=synth_payload)
     if not resp.status_code == 200:
+        print(resp.text)
         raise ConnectionError("Status code: %d" % resp.status_code)
     after = perf_counter()
     return after - before
@@ -46,12 +61,12 @@ def gen_text(count: int):
 def get_speakers(address="127.0.0.1", port=50021):
     address = "http://"+address
     speakers = {}
-    resp = requests.get(f"{address}:{port}/speakers")
+    resp = requests.get(f"{address}:{port}/v1/speakers")
     resp_dict = resp.json()
     for i in resp_dict:
-        speakers[i["name"]] = {}
+        speakers[i["speakerUuid"]] = {}
         for s in i["styles"]:
-            speakers[i["name"]][s["name"]] = s["id"]
+            speakers[i["speakerUuid"]][s["styleName"]] = s["styleId"]
     return speakers
 
 
@@ -71,13 +86,21 @@ def bench(length: int, count=10, address="127.0.0.1", port=50021, quiet=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "-s", help="VOICEVOX API Server Address", default="127.0.0.1")
-    parser.add_argument("-p", help="VOICEVOX API Server Port", default=50021)
+        "-s", help="COEIROINK API Server Address", default="127.0.0.1")
+    parser.add_argument("-p", help="COEIROINK API Server Port", default=50021)
     parser.add_argument("-q", help="Quiet benchmark log", action="store_true")
     parser.add_argument("-w", help="No wait for key input",
                         action="store_true")
     parser.add_argument("--ssl", help="Use SSL", action="store_true")
+    parser.add_argument("--list", help="List speakers", action="store_true")
     args = parser.parse_args()
+    if args.list:
+        speakers = get_speakers(address=args.s, port=args.p)
+        for k,v in speakers.items():
+            print(k)
+            for s,i in v.items():
+                print(" ",s,i)
+        exit()
     if not args.w:
         input("Press Enter key to start benchmark...")
     if args.ssl:
@@ -88,20 +111,7 @@ if __name__ == "__main__":
     score_50 = bench(length=50, address=args.s, port=args.p, quiet=args.q)
     score_100 = bench(length=100, address=args.s, port=args.p, quiet=args.q)
     score_avg = round((score_10 + score_50 + score_100) / 3, 4)
-    resp = requests.get(f"{ADDRESS}:{args.p}/version")
-    info_engine = resp.text.replace("\"", "")
-    resp = requests.get(f"{ADDRESS}:{args.p}/supported_devices")
-    info_devices = resp.json()
-    if info_devices["cuda"]:
-        info_device = "CUDA"
-    elif info_devices["dml"]:
-        info_device = "DirectML"
-    else:
-        info_device = "CPU"
     print()
-    print("=========== Info ===========")
-    print(" Engine:", info_engine)
-    print(" Device:", info_device)
     print("========== Result ==========")
     print(" 10: ", score_10)
     print(" 50: ", score_50)
